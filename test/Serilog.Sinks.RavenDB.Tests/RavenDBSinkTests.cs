@@ -90,6 +90,40 @@ namespace Serilog.Sinks.RavenDB.Tests
         }
 
         [Test]
+        public void WhenAnEventIsWrittenWithExpirationCallbackItHasProperMetadata()
+        {
+            using (var documentStore = Raven.Embedded.EmbeddedServer.Instance.GetDocumentStore(GenerateRandomDatabaseName()))
+            {
+                documentStore.Initialize();
+
+                var timestamp = new DateTimeOffset(2013, 05, 28, 22, 10, 20, 666, TimeSpan.FromHours(10));
+                var expiration = TimeSpan.FromDays(1);
+                var errorExpiration = TimeSpan.FromMinutes(15);
+                var targetExpiration = DateTime.UtcNow.Add(expiration);
+                TimeSpan func(Events.LogEvent le) => le.Level == LogEventLevel.Information ? expiration : errorExpiration;
+                var exception = new ArgumentException("Mládek");
+                const LogEventLevel level = LogEventLevel.Information;
+                const string messageTemplate = "{Song}++";
+                var properties = new List<LogEventProperty> { new LogEventProperty("Song", new ScalarValue("New Macabre")) };
+
+                using (var ravenSink = new RavenDBSink(documentStore, 2, TinyWait, null, logExpirationCallback: func))
+                {
+                    var template = new MessageTemplateParser().Parse(messageTemplate);
+                    var logEvent = new Events.LogEvent(timestamp, level, exception, template, properties);
+                    ravenSink.Emit(logEvent);
+                }
+
+                using (var session = documentStore.OpenSession())
+                {
+                    var logEvent = session.Query<LogEvent>().Customize(x => x.WaitForNonStaleResults()).First();
+                    var metaData = session.Advanced.GetMetadataFor(logEvent)[Constants.Documents.Metadata.Expires].ToString();
+                    var actualExpiration = Convert.ToDateTime(metaData).ToUniversalTime();
+                    Assert.GreaterOrEqual(actualExpiration, targetExpiration, "The document should expire on or after {0} but expires {1}", targetExpiration, actualExpiration);
+                }
+            }
+        }
+
+        [Test]
         public void WhenAnErrorEventIsWrittenWithExpirationItHasProperMetadata()
         {
             using (var documentStore = Raven.Embedded.EmbeddedServer.Instance.GetDocumentStore(GenerateRandomDatabaseName()))
